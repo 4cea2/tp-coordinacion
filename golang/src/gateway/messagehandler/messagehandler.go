@@ -1,7 +1,7 @@
 package messagehandler
 
 import (
-	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
@@ -33,8 +33,11 @@ func (messageHandler *MessageHandler) DeserializeResultMessage(message *middlewa
 	if err != nil {
 		return nil, err
 	}
+	slog.Info("Deserializing ", "fruits", fruitRecords, "clientID", clientID)
+
 	if clientID != messageHandler.clientID {
-		return nil, errors.New("Client ID mismatch")
+		slog.Info("ClientID dismatch, skipping...")
+		return nil, nil
 	}
 	return fruitRecords, nil
 }

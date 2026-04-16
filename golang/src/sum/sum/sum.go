@@ -108,6 +108,8 @@ func (sum *Sum) handleEndOfRecordMessage(clientID int64) error {
 		slog.Debug("While sending EOF message", "err", err, "clientID", clientID)
 		return err
 	}
+
+	delete(sum.clientFruits, clientID)
 	return nil
 }
 

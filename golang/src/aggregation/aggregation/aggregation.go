@@ -2,7 +2,6 @@ package aggregation
 
 import (
 	"fmt"
-	"log"
 	"log/slog"
 	"sort"
 
@@ -82,7 +81,7 @@ func (aggregation *Aggregation) handleEndOfRecordsMessage(clientID int64) error 
 	slog.Info("Received End Of Records message", "clientID", clientID)
 
 	fruitTopRecords := aggregation.buildFruitTop(clientID)
-	log.Println(aggregation.clientFruits[clientID])
+	slog.Info("top fruits per client", "fruits", fruitTopRecords, "clientID", clientID)
 	message, err := inner.SerializeMessage(fruitTopRecords, clientID)
 	if err != nil {
 		slog.Debug("While serializing top message", "err", err, "clientID", clientID)
@@ -93,16 +92,7 @@ func (aggregation *Aggregation) handleEndOfRecordsMessage(clientID int64) error 
 		return err
 	}
 
-	eofMessage := []fruititem.FruitItem{}
-	message, err = inner.SerializeMessage(eofMessage, clientID)
-	if err != nil {
-		slog.Debug("While serializing EOF message", "err", err)
-		return err
-	}
-	if err := aggregation.outputQueue.Send(*message); err != nil {
-		slog.Debug("While sending EOF message", "err", err)
-		return err
-	}
+	delete(aggregation.clientFruits, clientID)
 	return nil
 }
 

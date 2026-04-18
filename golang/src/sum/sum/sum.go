@@ -95,11 +95,12 @@ func (sum *Sum) handleMessageExchange(msg middleware.Message, ack, nack func()) 
 			slog.Info("No me interesa mi propio FF")
 			return
 		}
-		slog.Info("FF FRUIT RECORDS FOUND")
+		slog.Info("Final fruit recibida")
 		// Si es FF, mando las frutas actuales del cliente, y mando EOF
 		fruitItemMap, ok := sum.clientFruits[clientID]
 		if !ok {
 			slog.Info("Ya borre, no hago nada")
+			// Si me llega esto cuando estoy en el caso borde mencionado abajo, no deberia retornar...
 			return
 		}
 		err := sum.sendFruitsToOutput(clientID, fruitItemMap)
@@ -107,7 +108,6 @@ func (sum *Sum) handleMessageExchange(msg middleware.Message, ack, nack func()) 
 			// Tengo que nack?
 			return
 		}
-
 		eofMessage := []fruititem.FruitItem{}
 		err = sum.sendMessageToExchangeSums(clientID, eofMessage)
 		if err != nil {
@@ -116,30 +116,21 @@ func (sum *Sum) handleMessageExchange(msg middleware.Message, ack, nack func()) 
 		}
 		delete(sum.clientFruits, clientID)
 	} else {
-		slog.Info("RECIVI EOF DE OTROS SUMS")
+		slog.Info("Recibi EOF de otros sums")
 		// Si es EOF, verifico que me lleguen los que espere (si soy el que envio FF)
 		_, ok := sum.clientFruits[clientID]
 		if !ok {
 			// No fui el que el FF, no hago nada
-			slog.Info("no fui el que envio el FF, f")
+			slog.Info("No fui el que envio el FF")
 			return
 		}
-		// Soy el que envio el FF...
-		sum.counterEOFs += 1
-		if sum.counterEOFs == sum.sumAmount {
-			eofMessage := []fruititem.FruitItem{}
-			message, err := inner.SerializeMessage(eofMessage, clientID)
-			if err != nil {
-				slog.Debug("While serializing EOF message", "err", err, "clientID", clientID)
-				return
-			}
-			if err := sum.outputExchange.Send(*message); err != nil {
-				slog.Debug("While sending EOF message", "err", err, "clientID", clientID)
-				return
-			}
-			delete(sum.clientFruits, clientID)
-			sum.counterEOFs = 0
+
+		err := sum.processEOF(clientID)
+		if err != nil {
+			// NACK?
+			return
 		}
+
 	}
 }
 
@@ -235,4 +226,24 @@ func (sum *Sum) createFruitFinalMessage() []fruititem.FruitItem {
 	fruitFinalMessage := []fruititem.FruitItem{}
 	fruitFinalMessage = append(fruitFinalMessage, fruitFinal)
 	return fruitFinalMessage
+}
+
+func (sum *Sum) processEOF(clientID int64) error {
+	sum.counterEOFs += 1
+	if sum.counterEOFs == sum.sumAmount {
+		eofMessage := []fruititem.FruitItem{}
+		message, err := inner.SerializeMessage(eofMessage, clientID)
+		if err != nil {
+			slog.Debug("While serializing EOF message", "err", err, "clientID", clientID)
+			return err
+		}
+		if err := sum.outputExchange.Send(*message); err != nil {
+			slog.Debug("While sending EOF message", "err", err, "clientID", clientID)
+			return err
+		}
+		delete(sum.clientFruits, clientID)
+		sum.counterEOFs = 0
+	}
+
+	return nil
 }

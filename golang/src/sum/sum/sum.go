@@ -3,6 +3,7 @@ package sum
 import (
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
@@ -26,6 +27,7 @@ type Sum struct {
 	exchangeSums   middleware.Middleware
 	sumAmount      int
 	id             int
+	mu             sync.Mutex
 	counterEOFs    map[int64]int
 	clientFruits   map[int64]map[string]fruititem.FruitItem
 }
@@ -138,6 +140,8 @@ func (sum *Sum) handleEndOfRecordMessage(clientID int64) error {
 }
 
 func (sum *Sum) handleDataMessage(fruitRecords []fruititem.FruitItem, clientID int64) error {
+	sum.mu.Lock()
+	defer sum.mu.Unlock()
 	if _, ok := sum.clientFruits[clientID]; !ok {
 		sum.clientFruits[clientID] = map[string]fruititem.FruitItem{}
 	}
@@ -184,11 +188,7 @@ func (sum *Sum) sendMessageToExchangeSums(clientID int64, fruitMessage []fruitit
 }
 
 func (sum *Sum) createFruitFinalMessage(sumId string) []fruititem.FruitItem {
-	fruitFinal1 := fruititem.FruitItem{Fruit: sumId, Amount: uint32(0)}
-	fruitFinal2 := fruititem.FruitItem{Fruit: sumId, Amount: uint32(0)}
-	fruitFinalMessage := []fruititem.FruitItem{}
-	fruitFinalMessage = append(fruitFinalMessage, fruitFinal1)
-	fruitFinalMessage = append(fruitFinalMessage, fruitFinal2)
+	fruitFinalMessage := []fruititem.FruitItem{fruititem.FruitItem{Fruit: sumId, Amount: uint32(0)}, fruititem.FruitItem{Fruit: sumId, Amount: uint32(0)}}
 	return fruitFinalMessage
 }
 
@@ -205,15 +205,19 @@ func (sum *Sum) processFF(clientID int64) error {
 			slog.Debug("While sending EOF message", "err", err, "clientID", clientID)
 			return err
 		}
-		delete(sum.clientFruits, clientID) // Si soy el mismo que envio EOF, no va a hacer nada, ya que lo elimine en processFF
 		delete(sum.counterEOFs, clientID)
 	}
-
 	return nil
 }
 
 func (sum *Sum) processEOF(clientID int64, sumId string) error {
+	sum.mu.Lock()
 	fruits, ok := sum.clientFruits[clientID]
+	if ok {
+		delete(sum.clientFruits, clientID)
+	}
+	sum.mu.Unlock()
+
 	if ok {
 		err := sum.sendFruitsToOutput(clientID, fruits)
 		if err != nil {
@@ -221,7 +225,6 @@ func (sum *Sum) processEOF(clientID int64, sumId string) error {
 			return err
 		}
 	}
-	delete(sum.clientFruits, clientID)
 
 	finalFruitMessage := sum.createFruitFinalMessage(sumId)
 	err := sum.sendMessageToExchangeSums(clientID, finalFruitMessage)

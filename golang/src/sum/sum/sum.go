@@ -26,7 +26,7 @@ type Sum struct {
 	exchangeSums   middleware.Middleware
 	sumAmount      int
 	id             int
-	counterEOFs    int
+	counterEOFs    map[int64]int
 	clientFruits   map[int64]map[string]fruititem.FruitItem
 }
 
@@ -62,7 +62,7 @@ func NewSum(config SumConfig) (*Sum, error) {
 		exchangeSums:   exchangeSums,
 		sumAmount:      config.SumAmount,
 		id:             config.Id,
-		counterEOFs:    0,
+		counterEOFs:    map[int64]int{},
 		clientFruits:   map[int64]map[string]fruititem.FruitItem{},
 	}, nil
 }
@@ -82,16 +82,11 @@ func (sum *Sum) handleMessageExchange(msg middleware.Message, ack, nack func()) 
 	fruitRecords, clientID, _, err := inner.DeserializeMessage(&msg)
 	if err != nil {
 		// Nack?
-		slog.Error("While deserializing FF message from exchange", "clientID", clientID)
+		slog.Error("While deserializing message from exchange", "clientID", clientID)
 		return
 	}
 	sumId := fruitRecords[0].Fruit
 	if len(fruitRecords) == 1 {
-		_, ok := sum.clientFruits[clientID]
-		if !ok {
-			// Si me llega esto, estoy en el caso borde mencionado abajo, no deberia retornar?
-			return
-		}
 		err := sum.processEOF(clientID, sumId)
 		if err != nil {
 			// nack?
@@ -99,6 +94,7 @@ func (sum *Sum) handleMessageExchange(msg middleware.Message, ack, nack func()) 
 		}
 	} else {
 		if sumId != fmt.Sprintf("%d", sum.id) {
+			// Si no fui el que envio el EOF, no me interesa
 			return
 		}
 		err := sum.processFF(clientID)
@@ -131,13 +127,6 @@ func (sum *Sum) handleMessage(msg middleware.Message, ack func(), nack func()) {
 
 func (sum *Sum) handleEndOfRecordMessage(clientID int64) error {
 	slog.Info("Received End Of Records message", "clientID", clientID)
-	_, ok := sum.clientFruits[clientID]
-
-	if !ok {
-		// Puede darse el caso en que los demas sums hayan procesado todas las frutas del cliente
-		// Por ende nunca guardaste una fruta en esta replica, y justo te llego este EOF
-	}
-
 	eofMessage := []fruititem.FruitItem{}
 	eofFruitMessage := fruititem.FruitItem{Fruit: fmt.Sprintf("%d", sum.id), Amount: uint32(0)}
 	eofMessage = append(eofMessage, eofFruitMessage)
@@ -204,8 +193,8 @@ func (sum *Sum) createFruitFinalMessage(sumId string) []fruititem.FruitItem {
 }
 
 func (sum *Sum) processFF(clientID int64) error {
-	sum.counterEOFs += 1
-	if sum.counterEOFs == sum.sumAmount {
+	sum.counterEOFs[clientID] += 1
+	if sum.counterEOFs[clientID] == sum.sumAmount {
 		eofMessage := []fruititem.FruitItem{}
 		message, err := inner.SerializeMessage(eofMessage, clientID)
 		if err != nil {
@@ -217,25 +206,28 @@ func (sum *Sum) processFF(clientID int64) error {
 			return err
 		}
 		delete(sum.clientFruits, clientID) // Si soy el mismo que envio EOF, no va a hacer nada, ya que lo elimine en processFF
-		sum.counterEOFs = 0
+		delete(sum.counterEOFs, clientID)
 	}
 
 	return nil
 }
 
 func (sum *Sum) processEOF(clientID int64, sumId string) error {
-	err := sum.sendFruitsToOutput(clientID, sum.clientFruits[clientID])
-	if err != nil {
-		// Tengo que nack?
-		return err
+	fruits, ok := sum.clientFruits[clientID]
+	if ok {
+		err := sum.sendFruitsToOutput(clientID, fruits)
+		if err != nil {
+			// Tengo que nack?
+			return err
+		}
 	}
+	delete(sum.clientFruits, clientID)
+
 	finalFruitMessage := sum.createFruitFinalMessage(sumId)
-	err = sum.sendMessageToExchangeSums(clientID, finalFruitMessage)
+	err := sum.sendMessageToExchangeSums(clientID, finalFruitMessage)
 	if err != nil {
 		// nack?
 		return err
 	}
-	delete(sum.clientFruits, clientID)
-
 	return nil
 }

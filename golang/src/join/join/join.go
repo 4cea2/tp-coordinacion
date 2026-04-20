@@ -59,9 +59,13 @@ func (join *Join) handleMessage(msg middleware.Message, ack func(), nack func())
 	defer ack()
 	fruitRecords, clientID, isEof, _ := inner.DeserializeMessage(&msg)
 
+	if _, ok := join.clientFruits[clientID]; !ok {
+		join.clientFruits[clientID] = map[string]fruititem.FruitItem{}
+	}
+
 	if isEof {
 		slog.Info("Received End Of Records message", "clientID", clientID)
-		fruitsTop := join.buildFruitTop(join.clientFruits[clientID]) // y si el cliente no me manda nada, solo un eof?
+		fruitsTop := join.buildFruitTop(join.clientFruits[clientID])
 		slog.Info("top fruits per client", "fruits", fruitsTop, "clientID", clientID)
 		message, err := inner.SerializeMessage(fruitsTop, clientID)
 		if err != nil {
@@ -71,10 +75,6 @@ func (join *Join) handleMessage(msg middleware.Message, ack func(), nack func())
 			slog.Error("While sending top", "err", err)
 		}
 	} else {
-		if _, ok := join.clientFruits[clientID]; !ok {
-			join.clientFruits[clientID] = map[string]fruititem.FruitItem{}
-		}
-
 		for _, fruitRecord := range fruitRecords {
 			if _, ok := join.clientFruits[clientID][fruitRecord.Fruit]; ok {
 				join.clientFruits[clientID][fruitRecord.Fruit] = join.clientFruits[clientID][fruitRecord.Fruit].Sum(fruitRecord)

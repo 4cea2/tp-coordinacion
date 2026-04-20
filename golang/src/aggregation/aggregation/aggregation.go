@@ -83,19 +83,16 @@ func (aggregation *Aggregation) handleMessageExchange(msg middleware.Message, ac
 		slog.Error("While deserializing message from exchange", "clientID", clientID)
 		return
 	}
+
 	fruitName := fruitRecords[0].Fruit
 	aggId := fruitRecords[0].Amount
 	if fruitName == "EOF" {
-		slog.Info("Received EOF fruit", "fruitsRecords", fruitRecords, "clientID", clientID)
 		err := aggregation.processEOF(clientID, aggId)
 		if err != nil {
 			// nack?
 			return
 		}
 	} else if fruitName == "FF" {
-		slog.Info("Received FF fruit")
-		slog.Info("fruitsRecords", fruitRecords[1:])
-		slog.Info("clientID", clientID)
 		if fmt.Sprintf("%d", aggId) != fmt.Sprintf("%d", aggregation.config.Id) {
 			// Si no fui el que envio el EOF, no me interesa
 			return
@@ -117,20 +114,12 @@ func (aggregation *Aggregation) processEOF(clientID int64, aggId uint32) error {
 	fruitsTop := []fruititem.FruitItem{fruititem.FruitItem{Fruit: "FF", Amount: aggId}}
 	if ok {
 		top := aggregation.buildFruitTop(clientID)
-		slog.Info("top", top)
 		for _, fruit := range top {
 			fruitsTop = append(fruitsTop, fruit)
 		}
 		delete(aggregation.clientFruits, clientID)
-		_, a := aggregation.clientFruits[clientID]
-		if !a {
-			slog.Info("EFECTIVAMENTE NO EXISTE")
-		}
-	} else {
-		// No tenia registrado al cliente
-		slog.Info("WATEHEEEL")
 	}
-	slog.Info("fruitsTop", fruitsTop)
+
 	finalFruitMessage, err := inner.SerializeMessage(fruitsTop, clientID)
 	if err != nil {
 		slog.Debug("While serializing message to other aggs", "err", err, "fruitMessage", finalFruitMessage, "clientID", clientID)
@@ -150,13 +139,11 @@ func (aggregation *Aggregation) processFF(clientID int64, fruits []fruititem.Fru
 	if !ok {
 		// Siempre deberia entrar aca porque la elimino antes...
 		aggregation.clientFruits[clientID] = map[string]fruititem.FruitItem{}
-	} else {
-		// No deberia entrar aca, si lo elimine antes...
-		slog.Info("PELIGRO ALERTA ALERTA")
 	}
 	for _, fruit := range fruits {
 		aggregation.clientFruits[clientID][fruit.Fruit] = fruit // No piso a ninguna fruta porque las que me llegan son todas nuevas
 	}
+
 	if aggregation.counterEOFs[clientID] == aggregation.config.AggregationAmount {
 		fruitTops := aggregation.buildFruitTop(clientID)
 		message, err := inner.SerializeMessage(fruitTops, clientID)

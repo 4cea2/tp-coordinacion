@@ -261,7 +261,7 @@ func (sum *Sum) sendToOutputExchanges(clientID int64, fruitMessage []fruititem.F
 		slog.Debug("While serializing EOF message", "err", err, "clientID", clientID)
 		return err
 	}
-	fruitName := ""
+	fruitName := fmt.Sprintf("%d", clientID) // No envio por fruta cuando me llega el EOF, sino por clientID
 	if len(fruitMessage) == 1 {
 		fruitName = fruitMessage[0].Fruit
 	}

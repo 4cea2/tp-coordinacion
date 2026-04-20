@@ -244,8 +244,10 @@ func (sum *Sum) processEOF(clientID int64, sumId string, fruits map[string]fruit
 	return nil
 }
 
-func (sum *Sum) getKeyForExchange(fruitName string) string {
+func (sum *Sum) getKeyForExchange(clientID int64, fruitName string) string {
 	hash := fnv.New32a()
+
+	hash.Write([]byte(fmt.Sprintf("%d", clientID)))
 	hash.Write([]byte(fruitName))
 
 	idx := int(hash.Sum32()) % sum.config.AggregationAmount
@@ -263,7 +265,7 @@ func (sum *Sum) sendToOutputExchanges(clientID int64, fruitMessage []fruititem.F
 	if len(fruitMessage) == 1 {
 		fruitName = fruitMessage[0].Fruit
 	}
-	keyExchange := sum.getKeyForExchange(fruitName)
+	keyExchange := sum.getKeyForExchange(clientID, fruitName)
 	if err := sum.outputExchanges[keyExchange].Send(*message); err != nil {
 		slog.Debug("While sending EOF message", "err", err, "clientID", clientID)
 		return err

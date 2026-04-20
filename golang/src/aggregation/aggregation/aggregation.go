@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"sync"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
@@ -30,6 +31,9 @@ type Aggregation struct {
 	topSize       int
 	exchangeAggs  middleware.Middleware
 	config        AggregationConfig
+	mu            sync.Mutex
+	cond          *sync.Cond
+	processing    bool
 }
 
 func NewAggregation(config AggregationConfig) (*Aggregation, error) {
@@ -53,8 +57,7 @@ func NewAggregation(config AggregationConfig) (*Aggregation, error) {
 		inputExchange.Close()
 		return nil, err
 	}
-
-	return &Aggregation{
+	agg := &Aggregation{
 		outputQueue:   outputQueue,
 		inputExchange: inputExchange,
 		clientFruits:  map[int64]map[string]fruititem.FruitItem{},
@@ -62,7 +65,10 @@ func NewAggregation(config AggregationConfig) (*Aggregation, error) {
 		topSize:       config.TopSize,
 		exchangeAggs:  exchangeAggs,
 		config:        config,
-	}, nil
+		processing:    false,
+	}
+	agg.cond = sync.NewCond(&agg.mu)
+	return agg, nil
 }
 
 func (aggregation *Aggregation) Run() {
@@ -87,7 +93,15 @@ func (aggregation *Aggregation) handleMessageExchange(msg middleware.Message, ac
 	fruitName := fruitRecords[0].Fruit
 	aggId := fruitRecords[0].Amount
 	if fruitName == "EOF" {
-		err := aggregation.processEOF(clientID, aggId)
+		aggregation.mu.Lock()
+		for aggregation.processing {
+			aggregation.cond.Wait()
+		}
+		fruits, ok := aggregation.clientFruits[clientID]
+		delete(aggregation.clientFruits, clientID)
+		aggregation.mu.Unlock()
+
+		err := aggregation.processEOF(clientID, aggId, fruits, ok)
 		if err != nil {
 			// nack?
 			return
@@ -97,7 +111,22 @@ func (aggregation *Aggregation) handleMessageExchange(msg middleware.Message, ac
 			// Si no fui el que envio el EOF, no me interesa
 			return
 		}
-		err := aggregation.processFF(clientID, fruitRecords[1:])
+		aggregation.mu.Lock()
+		for aggregation.processing {
+			aggregation.cond.Wait()
+		}
+		_, ok := aggregation.clientFruits[clientID]
+		if !ok {
+			// Siempre deberia entrar aca porque la elimino antes...
+			aggregation.clientFruits[clientID] = map[string]fruititem.FruitItem{}
+		}
+		for _, fruit := range fruitRecords[1:] {
+			aggregation.clientFruits[clientID][fruit.Fruit] = fruit // No piso a ninguna fruta porque las que me llegan son todas nuevas
+		}
+		fruitsMap := aggregation.clientFruits[clientID]
+		aggregation.mu.Unlock()
+
+		err := aggregation.processFF(clientID, fruitsMap)
 		if err != nil {
 			// NACK?
 			return
@@ -107,17 +136,13 @@ func (aggregation *Aggregation) handleMessageExchange(msg middleware.Message, ac
 	}
 }
 
-// Me envio mi propio top
-func (aggregation *Aggregation) processEOF(clientID int64, aggId uint32) error {
-	_, ok := aggregation.clientFruits[clientID]
-
+func (aggregation *Aggregation) processEOF(clientID int64, aggId uint32, fruitsMap map[string]fruititem.FruitItem, ok bool) error {
 	fruitsTop := []fruititem.FruitItem{fruititem.FruitItem{Fruit: "FF", Amount: aggId}}
 	if ok {
-		top := aggregation.buildFruitTop(clientID)
+		top := aggregation.buildFruitTop(fruitsMap)
 		for _, fruit := range top {
 			fruitsTop = append(fruitsTop, fruit)
 		}
-		delete(aggregation.clientFruits, clientID)
 	}
 
 	err := aggregation.sendToExchangeAggs(fruitsTop, clientID)
@@ -127,19 +152,10 @@ func (aggregation *Aggregation) processEOF(clientID int64, aggId uint32) error {
 	return nil
 }
 
-func (aggregation *Aggregation) processFF(clientID int64, fruits []fruititem.FruitItem) error {
+func (aggregation *Aggregation) processFF(clientID int64, fruitsMap map[string]fruititem.FruitItem) error {
 	aggregation.counterEOFs[clientID] += 1
-	_, ok := aggregation.clientFruits[clientID]
-	if !ok {
-		// Siempre deberia entrar aca porque la elimino antes...
-		aggregation.clientFruits[clientID] = map[string]fruititem.FruitItem{}
-	}
-	for _, fruit := range fruits {
-		aggregation.clientFruits[clientID][fruit.Fruit] = fruit // No piso a ninguna fruta porque las que me llegan son todas nuevas
-	}
-
 	if aggregation.counterEOFs[clientID] == aggregation.config.AggregationAmount {
-		fruitTops := aggregation.buildFruitTop(clientID)
+		fruitTops := aggregation.buildFruitTop(fruitsMap)
 		message, err := inner.SerializeMessage(fruitTops, clientID)
 		if err != nil {
 			slog.Debug("While serializing top fruits message to join", "err", err, "clientID", clientID)
@@ -152,13 +168,21 @@ func (aggregation *Aggregation) processFF(clientID int64, fruits []fruititem.Fru
 		}
 
 		delete(aggregation.counterEOFs, clientID)
-		delete(aggregation.clientFruits, clientID)
 	}
 	return nil
 }
 
 func (aggregation *Aggregation) handleMessage(msg middleware.Message, ack func(), nack func()) {
 	defer ack()
+	defer func() {
+		aggregation.mu.Lock()
+		aggregation.processing = false
+		aggregation.cond.Broadcast()
+		aggregation.mu.Unlock()
+	}()
+	aggregation.mu.Lock()
+	aggregation.processing = true
+	aggregation.mu.Unlock()
 
 	fruitRecords, clientID, isEof, err := inner.DeserializeMessage(&msg)
 	if err != nil {
@@ -172,7 +196,6 @@ func (aggregation *Aggregation) handleMessage(msg middleware.Message, ack func()
 		}
 		return
 	}
-
 	aggregation.handleDataMessage(fruitRecords, clientID)
 }
 
@@ -201,9 +224,9 @@ func (aggregation *Aggregation) handleDataMessage(fruitRecords []fruititem.Fruit
 	}
 }
 
-func (aggregation *Aggregation) buildFruitTop(clientID int64) []fruititem.FruitItem {
-	fruitItems := make([]fruititem.FruitItem, 0, len(aggregation.clientFruits[clientID]))
-	for _, item := range aggregation.clientFruits[clientID] {
+func (aggregation *Aggregation) buildFruitTop(fruitsMap map[string]fruititem.FruitItem) []fruititem.FruitItem {
+	fruitItems := make([]fruititem.FruitItem, 0, len(fruitsMap))
+	for _, item := range fruitsMap {
 		fruitItems = append(fruitItems, item)
 	}
 	sort.SliceStable(fruitItems, func(i, j int) bool {

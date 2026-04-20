@@ -28,6 +28,8 @@ type Sum struct {
 	sumAmount      int
 	id             int
 	mu             sync.Mutex
+	cond           *sync.Cond
+	processing     bool
 	counterEOFs    map[int64]int
 	clientFruits   map[int64]map[string]fruititem.FruitItem
 }
@@ -57,16 +59,18 @@ func NewSum(config SumConfig) (*Sum, error) {
 		exchangeSums.Close()
 		return nil, err
 	}
-
-	return &Sum{
+	sum := &Sum{
 		inputQueue:     inputQueue,
 		outputExchange: outputExchange,
 		exchangeSums:   exchangeSums,
 		sumAmount:      config.SumAmount,
 		id:             config.Id,
+		processing:     false,
 		counterEOFs:    map[int64]int{},
 		clientFruits:   map[int64]map[string]fruititem.FruitItem{},
-	}, nil
+	}
+	sum.cond = sync.NewCond(&sum.mu)
+	return sum, nil
 }
 
 func (sum *Sum) Run() {
@@ -89,6 +93,11 @@ func (sum *Sum) handleMessageExchange(msg middleware.Message, ack, nack func()) 
 	}
 	sumId := fruitRecords[0].Fruit
 	if len(fruitRecords) == 1 {
+		sum.mu.Lock()
+		for sum.processing {
+			sum.cond.Wait()
+		}
+		sum.mu.Unlock()
 		err := sum.processEOF(clientID, sumId)
 		if err != nil {
 			// nack?
@@ -141,7 +150,8 @@ func (sum *Sum) handleEndOfRecordMessage(clientID int64) error {
 
 func (sum *Sum) handleDataMessage(fruitRecords []fruititem.FruitItem, clientID int64) error {
 	sum.mu.Lock()
-	defer sum.mu.Unlock()
+	sum.processing = true
+	sum.mu.Unlock()
 	if _, ok := sum.clientFruits[clientID]; !ok {
 		sum.clientFruits[clientID] = map[string]fruititem.FruitItem{}
 	}
@@ -154,6 +164,10 @@ func (sum *Sum) handleDataMessage(fruitRecords []fruititem.FruitItem, clientID i
 			sum.clientFruits[clientID][fruitRecord.Fruit] = fruitRecord
 		}
 	}
+	sum.mu.Lock()
+	sum.processing = false
+	sum.cond.Broadcast()
+	sum.mu.Unlock()
 	return nil
 }
 

@@ -62,7 +62,6 @@ func NewAggregation(config AggregationConfig) (*Aggregation, error) {
 		inputExchange: inputExchange,
 		clientFruits:  map[int64]map[string]fruititem.FruitItem{},
 		counterEOFs:   map[int64]int{},
-		topSize:       config.TopSize,
 		exchangeAggs:  exchangeAggs,
 		config:        config,
 		processing:    false,
@@ -111,22 +110,8 @@ func (aggregation *Aggregation) handleMessageExchange(msg middleware.Message, ac
 			// Si no fui el que envio el EOF, no me interesa
 			return
 		}
-		aggregation.mu.Lock()
-		for aggregation.processing {
-			aggregation.cond.Wait()
-		}
-		_, ok := aggregation.clientFruits[clientID]
-		if !ok {
-			// Siempre deberia entrar aca porque la elimino antes...
-			aggregation.clientFruits[clientID] = map[string]fruititem.FruitItem{}
-		}
-		for _, fruit := range fruitRecords[1:] {
-			aggregation.clientFruits[clientID][fruit.Fruit] = fruit // No piso a ninguna fruta porque las que me llegan son todas nuevas
-		}
-		fruitsMap := aggregation.clientFruits[clientID]
-		aggregation.mu.Unlock()
 
-		err := aggregation.processFF(clientID, fruitsMap)
+		err := aggregation.processFF(clientID)
 		if err != nil {
 			// NACK?
 			return
@@ -137,7 +122,7 @@ func (aggregation *Aggregation) handleMessageExchange(msg middleware.Message, ac
 }
 
 func (aggregation *Aggregation) processEOF(clientID int64, aggId uint32, fruitsMap map[string]fruititem.FruitItem, ok bool) error {
-	fruitsTop := []fruititem.FruitItem{fruititem.FruitItem{Fruit: "FF", Amount: aggId}}
+	fruitsTop := []fruititem.FruitItem{}
 	if ok {
 		top := aggregation.buildFruitTop(fruitsMap)
 		for _, fruit := range top {
@@ -145,18 +130,28 @@ func (aggregation *Aggregation) processEOF(clientID int64, aggId uint32, fruitsM
 		}
 	}
 
-	err := aggregation.sendToExchangeAggs(fruitsTop, clientID)
+	message, err := inner.SerializeMessage(fruitsTop, clientID)
+	if err != nil {
+		slog.Debug("While serializing top fruits message to join", "err", err, "clientID", clientID)
+		return err
+	}
+	err = aggregation.outputQueue.Send(*message)
+	if err != nil {
+		slog.Error("While sending top fruits message to join", "err", err, "clientID", clientID)
+		return err
+	}
+
+	err = aggregation.sendToExchangeAggs([]fruititem.FruitItem{fruititem.FruitItem{Fruit: "FF", Amount: aggId}}, clientID)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func (aggregation *Aggregation) processFF(clientID int64, fruitsMap map[string]fruititem.FruitItem) error {
+func (aggregation *Aggregation) processFF(clientID int64) error {
 	aggregation.counterEOFs[clientID] += 1
 	if aggregation.counterEOFs[clientID] == aggregation.config.AggregationAmount {
-		fruitTops := aggregation.buildFruitTop(fruitsMap)
-		message, err := inner.SerializeMessage(fruitTops, clientID)
+		message, err := inner.SerializeMessage([]fruititem.FruitItem{}, clientID)
 		if err != nil {
 			slog.Debug("While serializing top fruits message to join", "err", err, "clientID", clientID)
 			return err
@@ -232,7 +227,7 @@ func (aggregation *Aggregation) buildFruitTop(fruitsMap map[string]fruititem.Fru
 	sort.SliceStable(fruitItems, func(i, j int) bool {
 		return fruitItems[j].Less(fruitItems[i])
 	})
-	finalTopSize := min(aggregation.topSize, len(fruitItems))
+	finalTopSize := min(aggregation.config.TopSize, len(fruitItems))
 	return fruitItems[:finalTopSize]
 }
 

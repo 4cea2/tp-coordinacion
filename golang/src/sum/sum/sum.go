@@ -125,6 +125,15 @@ func (sum *Sum) handleMessageExchange(msg middleware.Message, ack, nack func()) 
 
 func (sum *Sum) handleMessage(msg middleware.Message, ack func(), nack func()) {
 	defer ack()
+	defer func() {
+		sum.mu.Lock()
+		sum.processing = false
+		sum.cond.Broadcast()
+		sum.mu.Unlock()
+	}()
+	sum.mu.Lock()
+	sum.processing = true
+	sum.mu.Unlock()
 
 	fruitRecords, clientID, isEof, err := inner.DeserializeMessage(&msg)
 	if err != nil {
@@ -156,9 +165,6 @@ func (sum *Sum) handleEndOfRecordMessage(clientID int64) error {
 }
 
 func (sum *Sum) handleDataMessage(fruitRecords []fruititem.FruitItem, clientID int64) error {
-	sum.mu.Lock()
-	sum.processing = true
-	sum.mu.Unlock()
 	if _, ok := sum.clientFruits[clientID]; !ok {
 		sum.clientFruits[clientID] = map[string]fruititem.FruitItem{}
 	}
@@ -171,10 +177,6 @@ func (sum *Sum) handleDataMessage(fruitRecords []fruititem.FruitItem, clientID i
 			sum.clientFruits[clientID][fruitRecord.Fruit] = fruitRecord
 		}
 	}
-	sum.mu.Lock()
-	sum.processing = false
-	sum.cond.Broadcast()
-	sum.mu.Unlock()
 	return nil
 }
 

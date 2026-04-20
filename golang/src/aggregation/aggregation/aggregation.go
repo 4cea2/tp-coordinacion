@@ -120,14 +120,8 @@ func (aggregation *Aggregation) processEOF(clientID int64, aggId uint32) error {
 		delete(aggregation.clientFruits, clientID)
 	}
 
-	finalFruitMessage, err := inner.SerializeMessage(fruitsTop, clientID)
+	err := aggregation.sendToExchangeAggs(fruitsTop, clientID)
 	if err != nil {
-		slog.Debug("While serializing message to other aggs", "err", err, "fruitMessage", finalFruitMessage, "clientID", clientID)
-		return err
-	}
-	err = aggregation.exchangeAggs.Send(*finalFruitMessage)
-	if err != nil {
-		// nack?
 		return err
 	}
 	return nil
@@ -186,13 +180,8 @@ func (aggregation *Aggregation) handleEndOfRecordsMessage(clientID int64) error 
 	slog.Info("Received End Of Records message", "clientID", clientID)
 
 	fruit := []fruititem.FruitItem{{Fruit: "EOF", Amount: uint32(aggregation.config.Id)}}
-	message, err := inner.SerializeMessage(fruit, clientID)
+	err := aggregation.sendToExchangeAggs(fruit, clientID)
 	if err != nil {
-		slog.Debug("While serializing top message", "err", err, "clientID", clientID)
-		return err
-	}
-	if err := aggregation.exchangeAggs.Send(*message); err != nil {
-		slog.Debug("While sending top message", "err", err, "clientID", clientID)
 		return err
 	}
 	return nil
@@ -222,4 +211,17 @@ func (aggregation *Aggregation) buildFruitTop(clientID int64) []fruititem.FruitI
 	})
 	finalTopSize := min(aggregation.topSize, len(fruitItems))
 	return fruitItems[:finalTopSize]
+}
+
+func (aggregation *Aggregation) sendToExchangeAggs(fruits []fruititem.FruitItem, clientID int64) error {
+	message, err := inner.SerializeMessage(fruits, clientID)
+	if err != nil {
+		slog.Debug("While serializing message to exchange aggs", "err", err, "clientID", clientID, "fruits", fruits)
+		return err
+	}
+	if err := aggregation.exchangeAggs.Send(*message); err != nil {
+		slog.Debug("While sending message to exchange aggs", "err", err, "clientID", clientID, "fruits", fruits)
+		return err
+	}
+	return nil
 }

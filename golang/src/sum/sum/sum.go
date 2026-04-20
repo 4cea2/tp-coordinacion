@@ -104,8 +104,11 @@ func (sum *Sum) handleMessageExchange(msg middleware.Message, ack, nack func()) 
 		for sum.processing {
 			sum.cond.Wait()
 		}
+		fruits, ok := sum.clientFruits[clientID]
+		delete(sum.clientFruits, clientID)
 		sum.mu.Unlock()
-		err := sum.processEOF(clientID, sumId)
+
+		err := sum.processEOF(clientID, sumId, fruits, ok)
 		if err != nil {
 			// nack?
 			return
@@ -223,14 +226,7 @@ func (sum *Sum) processFF(clientID int64) error {
 	return nil
 }
 
-func (sum *Sum) processEOF(clientID int64, sumId string) error {
-	sum.mu.Lock()
-	fruits, ok := sum.clientFruits[clientID]
-	if ok {
-		delete(sum.clientFruits, clientID)
-	}
-	sum.mu.Unlock()
-
+func (sum *Sum) processEOF(clientID int64, sumId string, fruits map[string]fruititem.FruitItem, ok bool) error {
 	if ok {
 		err := sum.sendFruitsToOutput(clientID, fruits)
 		if err != nil {

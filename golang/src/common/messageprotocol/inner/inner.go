@@ -13,6 +13,18 @@ type MessageClient struct {
 	Data     []interface{} `json:"data"`
 }
 
+const (
+	TypeEOF    = iota // 0
+	TypeAckEOF        // 1 // 2
+)
+
+type ControlMessage struct {
+	Type      uint8 `json:"type"`
+	ClientID  int64 `json:"client_id"`
+	OriginID  int   `json:"origin_id"`
+	ReplyToID int   `json:"reply_to_id"`
+}
+
 func serializeJson(messageClient MessageClient) ([]byte, error) {
 	return json.Marshal(messageClient)
 }
@@ -75,4 +87,24 @@ func DeserializeMessage(message *middleware.Message) ([]fruititem.FruitItem, int
 	}
 
 	return fruitRecords, msgClient.ClientId, len(fruitRecords) == 0, nil
+}
+
+func SerializeControlMessage(ctrlMsg ControlMessage) (*middleware.Message, error) {
+	body, err := json.Marshal(ctrlMsg)
+	if err != nil {
+		return nil, err
+	}
+	message := middleware.Message{Body: string(body)}
+
+	return &message, nil
+}
+
+func DeserializeControlMessage(message *middleware.Message) (*ControlMessage, error) {
+	var ctrlMsg ControlMessage
+	err := json.Unmarshal([]byte(message.Body), &ctrlMsg)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ctrlMsg, nil
 }

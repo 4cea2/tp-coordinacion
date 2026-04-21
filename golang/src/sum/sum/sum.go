@@ -92,38 +92,39 @@ func (sum *Sum) Run() {
 
 func (sum *Sum) handleMessageExchange(msg middleware.Message, ack, nack func()) {
 	defer ack()
-	fruitRecords, clientID, _, err := inner.DeserializeMessage(&msg)
+	controlMessage, err := inner.DeserializeControlMessage(&msg)
 	if err != nil {
 		// Nack?
-		slog.Error("While deserializing message from exchange", "clientID", clientID)
+		slog.Error("While deserializing message from exchange sums")
 		return
 	}
-	sumId := fruitRecords[0].Fruit
-	slog.Info("Receive message from exchange sums", "clientID", clientID, "sumId", sumId)
-	if len(fruitRecords) == 1 {
+	slog.Info("Receive message from exchange sums", "controlMessage", controlMessage)
+	if controlMessage.Type == inner.TypeEOF {
 		sum.mu.Lock()
 		for sum.processing {
 			sum.cond.Wait()
 		}
-		fruits, ok := sum.clientFruits[clientID]
-		delete(sum.clientFruits, clientID)
+		fruits, ok := sum.clientFruits[controlMessage.ClientID]
+		delete(sum.clientFruits, controlMessage.ClientID)
 		sum.mu.Unlock()
 
-		err := sum.processEOF(clientID, sumId, fruits, ok)
+		err := sum.processEOF(*controlMessage, fruits, ok)
 		if err != nil {
 			// nack?
 			return
 		}
-	} else {
-		if sumId != fmt.Sprintf("%d", sum.config.Id) {
+	} else if controlMessage.Type == inner.TypeAckEOF {
+		if controlMessage.ReplyToID != sum.config.Id {
 			// Si no fui el que envio el EOF, no me interesa
 			return
 		}
-		err := sum.processFF(clientID)
+		err := sum.processFF(controlMessage.ClientID)
 		if err != nil {
 			// NACK?
 			return
 		}
+	} else {
+		// *c preocupa
 	}
 }
 
@@ -158,10 +159,8 @@ func (sum *Sum) handleMessage(msg middleware.Message, ack func(), nack func()) {
 
 func (sum *Sum) handleEndOfRecordMessage(clientID int64) error {
 	slog.Info("Received End Of Records message", "clientID", clientID)
-	eofMessage := []fruititem.FruitItem{}
-	eofFruitMessage := fruititem.FruitItem{Fruit: fmt.Sprintf("%d", sum.config.Id), Amount: uint32(0)}
-	eofMessage = append(eofMessage, eofFruitMessage)
-	err := sum.sendMessageToExchangeSums(clientID, eofMessage)
+	controlEOFMessage := inner.ControlMessage{Type: inner.TypeEOF, ClientID: clientID, OriginID: sum.config.Id}
+	err := sum.sendMessageToExchangeSums(controlEOFMessage)
 	if err != nil {
 		return err
 	}
@@ -198,28 +197,24 @@ func (sum *Sum) sendFruitsToOutput(clientID int64, fruitsItemMap map[string]frui
 	return nil
 }
 
-func (sum *Sum) sendMessageToExchangeSums(clientID int64, fruitMessage []fruititem.FruitItem) error {
-	message, err := inner.SerializeMessage(fruitMessage, clientID)
+func (sum *Sum) sendMessageToExchangeSums(controlMessage inner.ControlMessage) error {
+	message, err := inner.SerializeControlMessage(controlMessage)
 	if err != nil {
-		slog.Debug("While serializing message to other sums", "err", err, "fruitMessage", fruitMessage, "clientID", clientID)
+		slog.Debug("While serializing message to other sums", "err", err, "controlMessage", controlMessage)
 		return err
 	}
 	if err := sum.exchangeSums.Send(*message); err != nil {
-		slog.Debug("While sending message to other sums", "err", err, "fruitMessage", fruitMessage, "clientID", clientID)
+		slog.Debug("While sending message to other sums", "err", err, "controlMessage", controlMessage)
 		return err
 	}
-
 	return nil
 }
 
-func (sum *Sum) createFruitFinalMessage(sumId string) []fruititem.FruitItem {
-	fruitFinalMessage := []fruititem.FruitItem{fruititem.FruitItem{Fruit: sumId, Amount: uint32(0)}, fruititem.FruitItem{Fruit: sumId, Amount: uint32(0)}}
-	return fruitFinalMessage
-}
-
 func (sum *Sum) processFF(clientID int64) error {
-	sum.counterEOFs[clientID] += 1
-	if sum.counterEOFs[clientID] == sum.config.SumAmount {
+	sum.counterEOFs[clientID]++
+	count := sum.counterEOFs[clientID]
+
+	if count == sum.config.SumAmount {
 		eofMessage := []fruititem.FruitItem{}
 		err := sum.sendToOutputExchanges(clientID, eofMessage)
 		if err != nil {
@@ -230,10 +225,10 @@ func (sum *Sum) processFF(clientID int64) error {
 	return nil
 }
 
-func (sum *Sum) processEOF(clientID int64, sumId string, fruits map[string]fruititem.FruitItem, ok bool) error {
+func (sum *Sum) processEOF(controlMessage inner.ControlMessage, fruits map[string]fruititem.FruitItem, ok bool) error {
 	if ok {
-		slog.Info("fruits sent", "fruits", fruits, "clientID", clientID, "sumId", sumId)
-		err := sum.sendFruitsToOutput(clientID, fruits)
+		slog.Info("fruits sent", "fruits", fruits, "controlMessage", controlMessage)
+		err := sum.sendFruitsToOutput(controlMessage.ClientID, fruits)
 		if err != nil {
 			// Tengo que nack?
 			return err
@@ -242,8 +237,13 @@ func (sum *Sum) processEOF(clientID int64, sumId string, fruits map[string]fruit
 		slog.Info("Don't send fruits")
 	}
 
-	finalFruitMessage := sum.createFruitFinalMessage(sumId)
-	err := sum.sendMessageToExchangeSums(clientID, finalFruitMessage)
+	controlAckEOFMessage := inner.ControlMessage{
+		Type:      inner.TypeAckEOF,
+		ClientID:  controlMessage.ClientID,
+		OriginID:  sum.config.Id,
+		ReplyToID: controlMessage.OriginID,
+	}
+	err := sum.sendMessageToExchangeSums(controlAckEOFMessage)
 	if err != nil {
 		// nack?
 		return err

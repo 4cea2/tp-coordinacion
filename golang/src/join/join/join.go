@@ -26,6 +26,7 @@ type Join struct {
 	outputQueue  middleware.Middleware
 	clientFruits map[int64]map[string]fruititem.FruitItem
 	config       JoinConfig
+	countersEOFs map[int64]int
 }
 
 func NewJoin(config JoinConfig) (*Join, error) {
@@ -46,6 +47,7 @@ func NewJoin(config JoinConfig) (*Join, error) {
 		outputQueue:  outputQueue,
 		clientFruits: map[int64]map[string]fruititem.FruitItem{},
 		config:       config,
+		countersEOFs: map[int64]int{},
 	}, nil
 }
 
@@ -60,19 +62,26 @@ func (join *Join) handleMessage(msg middleware.Message, ack func(), nack func())
 	fruitRecords, clientID, isEof, _ := inner.DeserializeMessage(&msg)
 
 	if _, ok := join.clientFruits[clientID]; !ok {
+		slog.Info("New client", "clientID", clientID)
 		join.clientFruits[clientID] = map[string]fruititem.FruitItem{}
+		join.countersEOFs[clientID] = 0
 	}
 
 	if isEof {
+		join.countersEOFs[clientID] += 1
 		slog.Info("Received End Of Records message", "clientID", clientID)
-		fruitsTop := join.buildFruitTop(join.clientFruits[clientID])
-		slog.Info("top fruits per client", "fruits", fruitsTop, "clientID", clientID)
-		message, err := inner.SerializeMessage(fruitsTop, clientID)
-		if err != nil {
-			slog.Error("While serialize top", "err", err)
-		}
-		if err = join.outputQueue.Send(*message); err != nil {
-			slog.Error("While sending top", "err", err)
+		if join.countersEOFs[clientID] == join.config.AggregationAmount {
+			fruitsTop := join.buildFruitTop(join.clientFruits[clientID])
+			slog.Info("top fruits per client", "fruits", fruitsTop, "clientID", clientID)
+			message, err := inner.SerializeMessage(fruitsTop, clientID)
+			if err != nil {
+				slog.Error("While serialize top", "err", err)
+			}
+			if err = join.outputQueue.Send(*message); err != nil {
+				slog.Error("While sending top", "err", err)
+			}
+			delete(join.clientFruits, clientID)
+			delete(join.countersEOFs, clientID)
 		}
 	} else {
 		for _, fruitRecord := range fruitRecords {

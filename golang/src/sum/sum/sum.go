@@ -99,6 +99,7 @@ func (sum *Sum) handleMessageExchange(msg middleware.Message, ack, nack func()) 
 		return
 	}
 	sumId := fruitRecords[0].Fruit
+	slog.Info("Receive message from exchange sums", "clientID", clientID, "sumId", sumId)
 	if len(fruitRecords) == 1 {
 		sum.mu.Lock()
 		for sum.processing {
@@ -186,6 +187,9 @@ func (sum *Sum) handleDataMessage(fruitRecords []fruititem.FruitItem, clientID i
 func (sum *Sum) sendFruitsToOutput(clientID int64, fruitsItemMap map[string]fruititem.FruitItem) error {
 	for key := range fruitsItemMap {
 		fruitRecord := []fruititem.FruitItem{fruitsItemMap[key]}
+		if len(fruitRecord) == 0 {
+			continue
+		}
 		err := sum.sendToOutputExchanges(clientID, fruitRecord)
 		if err != nil {
 			return err
@@ -228,11 +232,14 @@ func (sum *Sum) processFF(clientID int64) error {
 
 func (sum *Sum) processEOF(clientID int64, sumId string, fruits map[string]fruititem.FruitItem, ok bool) error {
 	if ok {
+		slog.Info("fruits sent", "fruits", fruits, "clientID", clientID, "sumId", sumId)
 		err := sum.sendFruitsToOutput(clientID, fruits)
 		if err != nil {
 			// Tengo que nack?
 			return err
 		}
+	} else {
+		slog.Info("Don't send fruits")
 	}
 
 	finalFruitMessage := sum.createFruitFinalMessage(sumId)

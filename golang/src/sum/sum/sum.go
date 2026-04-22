@@ -32,7 +32,6 @@ type Sum struct {
 	config          SumConfig
 	mu              sync.Mutex
 	cond            *sync.Cond
-	processing      bool
 	clientFruits    map[int64]map[string]fruititem.FruitItem
 }
 
@@ -74,7 +73,6 @@ func NewSum(config SumConfig) (*Sum, error) {
 		outputExchanges: outputExchanges,
 		exchangeSums:    exchangeSums,
 		config:          config,
-		processing:      false,
 		clientFruits:    map[int64]map[string]fruititem.FruitItem{},
 	}
 	sum.cond = sync.NewCond(&sum.mu)
@@ -119,9 +117,6 @@ func (sum *Sum) handleMessageExchange(msg middleware.Message, ack, nack func()) 
 	}
 	slog.Info("Receive EOF message from exchange sums", "controlMessage", controlMessage)
 	sum.mu.Lock()
-	for sum.processing {
-		sum.cond.Wait()
-	}
 	// Entiendo que en este punto devuelvo una referencia de un elemento compartido,
 	// pero como inmediatamente hago un delete, lo saco del mapa, quedandome solo yo con la referencia y sacandola
 	// del mapa que usan otros hilos
@@ -144,15 +139,8 @@ func (sum *Sum) handleMessageExchange(msg middleware.Message, ack, nack func()) 
 }
 
 func (sum *Sum) handleMessage(msg middleware.Message, ack func(), nack func()) {
-	defer func() {
-		sum.mu.Lock()
-		sum.processing = false
-		sum.cond.Broadcast()
-		sum.mu.Unlock()
-	}()
+	defer sum.mu.Unlock()
 	sum.mu.Lock()
-	sum.processing = true
-	sum.mu.Unlock()
 
 	fruitRecords, clientID, isEof, err := inner.DeserializeMessage(&msg)
 	if err != nil {
@@ -165,7 +153,9 @@ func (sum *Sum) handleMessage(msg middleware.Message, ack func(), nack func()) {
 		if err := sum.handleEndOfRecordMessage(clientID); err != nil {
 			slog.Error("While handling end of record message", "err", err, "clientID", clientID)
 			nack()
+			return
 		}
+		ack()
 		return
 	}
 	if err := sum.handleDataMessage(fruitRecords, clientID); err != nil {

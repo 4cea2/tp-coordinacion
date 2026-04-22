@@ -90,7 +90,9 @@ func (aggregation *Aggregation) handleMessage(msg middleware.Message, ack func()
 		if err := aggregation.handleEndOfRecordsMessage(clientID); err != nil {
 			slog.Error("While handling end of record message", "err", err, clientID)
 			nack()
+			return
 		}
+		ack()
 		return
 	}
 	aggregation.handleDataMessage(fruitRecords, clientID)

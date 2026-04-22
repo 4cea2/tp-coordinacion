@@ -82,47 +82,42 @@ func (aggregation *Aggregation) Run() {
 
 func (aggregation *Aggregation) handleMessageExchange(msg middleware.Message, ack func(), nack func()) {
 	defer ack()
-	fruitRecords, clientID, _, err := inner.DeserializeMessage(&msg)
+	messageControl, err := inner.DeserializeControlMessage(&msg)
 	if err != nil {
 		// Nack?
-		slog.Error("While deserializing message from exchange", "clientID", clientID)
+		slog.Error("While deserializing message from exchange aggs", "messageControl", messageControl)
 		return
 	}
 
-	fruitName := fruitRecords[0].Fruit
-	aggId := fruitRecords[0].Amount
-	slog.Info("Receive message from exchange aggs", "clientID", clientID, "aggID", aggId)
-	if fruitName == "EOF" {
-		aggregation.mu.Lock()
-		for aggregation.processing {
-			aggregation.cond.Wait()
-		}
-		fruits, ok := aggregation.clientFruits[clientID]
-		delete(aggregation.clientFruits, clientID)
-		aggregation.mu.Unlock()
-
-		err := aggregation.processEOF(clientID, aggId, fruits, ok)
-		if err != nil {
-			// nack?
-			return
-		}
-	} else if fruitName == "FF" {
-		if fmt.Sprintf("%d", aggId) != fmt.Sprintf("%d", aggregation.config.Id) {
-			// Si no fui el que envio el EOF, no me interesa
-			return
-		}
-
-		err := aggregation.processFF(clientID)
-		if err != nil {
-			// NACK?
-			return
-		}
-	} else {
-		slog.Info("Received unexpected message from exchangeAggs", "clientID", clientID)
+	if messageControl.OriginID != aggregation.config.Id {
+		return
 	}
+	slog.Info("Receive my propie message from exchange aggs", "messageControl", messageControl)
+	aggregation.mu.Lock()
+	defer aggregation.mu.Unlock()
+	for aggregation.processing {
+		aggregation.cond.Wait()
+	}
+	aggregation.counterEOFs[messageControl.ClientID]++
+	if aggregation.counterEOFs[messageControl.ClientID] != aggregation.config.SumAmount {
+		return
+	}
+	fruits, ok := aggregation.clientFruits[messageControl.ClientID]
+	err = aggregation.processEOF(*messageControl, fruits, ok)
+	if err != nil {
+		// nack?
+		return
+	}
+	err = aggregation.processFF(*messageControl)
+	if err != nil {
+		// NACK?
+		return
+	}
+	delete(aggregation.clientFruits, messageControl.ClientID)
+	delete(aggregation.counterEOFs, messageControl.ClientID)
 }
 
-func (aggregation *Aggregation) processEOF(clientID int64, aggId uint32, fruitsMap map[string]fruititem.FruitItem, ok bool) error {
+func (aggregation *Aggregation) processEOF(messageControl inner.ControlMessage, fruitsMap map[string]fruititem.FruitItem, ok bool) error {
 	fruitsTop := []fruititem.FruitItem{}
 	if ok {
 		top := aggregation.buildFruitTop(fruitsMap)
@@ -130,44 +125,39 @@ func (aggregation *Aggregation) processEOF(clientID int64, aggId uint32, fruitsM
 			fruitsTop = append(fruitsTop, fruit)
 		}
 	} else {
-		slog.Info("Fruits not map", "clientID", clientID)
+		slog.Info("Fruits not map", "clientID", messageControl.ClientID)
 	}
 
 	if len(fruitsTop) == 0 {
-		slog.Info("Dont send fruits", "clientID", clientID)
+		slog.Info("Dont send fruits", "clientID", messageControl.ClientID)
 	} else {
-		message, err := inner.SerializeMessage(fruitsTop, clientID)
+		message, err := inner.SerializeMessage(fruitsTop, messageControl.ClientID)
 		if err != nil {
-			slog.Debug("While serializing top fruits message to join", "err", err, "clientID", clientID)
+			slog.Debug("While serializing top fruits message to join", "err", err, "clientID", messageControl.ClientID)
 			return err
 		}
-		slog.Info("Fruits sent", "fruitsTop", fruitsTop, "clientID", clientID)
+		slog.Info("Fruits sent", "fruitsTop", fruitsTop, "clientID", messageControl.ClientID)
 		err = aggregation.outputQueue.Send(*message)
 		if err != nil {
-			slog.Error("While sending top fruits message to join", "err", err, "clientID", clientID)
+			slog.Error("While sending top fruits message to join", "err", err, "clientID", messageControl.ClientID)
 			return err
 		}
-	}
-
-	err := aggregation.sendToExchangeAggs([]fruititem.FruitItem{fruititem.FruitItem{Fruit: "FF", Amount: uint32(aggregation.config.Id)}}, clientID)
-	if err != nil {
-		return err
 	}
 	return nil
 }
 
-func (aggregation *Aggregation) processFF(clientID int64) error {
-	message, err := inner.SerializeMessage([]fruititem.FruitItem{}, clientID)
+func (aggregation *Aggregation) processFF(messageControl inner.ControlMessage) error {
+	message, err := inner.SerializeMessage([]fruititem.FruitItem{}, messageControl.ClientID)
 	if err != nil {
-		slog.Debug("While serializing top fruits message to join", "err", err, "clientID", clientID)
+		slog.Debug("While serializing top fruits message to join", "err", err, "messageControl", messageControl)
 		return err
 	}
 	err = aggregation.outputQueue.Send(*message)
 	if err != nil {
-		slog.Error("While sending top fruits message to join", "err", err, "clientID", clientID)
+		slog.Error("While sending top fruits message to join", "err", err, "messageControl", messageControl)
 		return err
 	}
-
+	slog.Info("Sent EOF to join", "clientID", messageControl.ClientID)
 	return nil
 }
 
@@ -201,8 +191,8 @@ func (aggregation *Aggregation) handleMessage(msg middleware.Message, ack func()
 func (aggregation *Aggregation) handleEndOfRecordsMessage(clientID int64) error {
 	slog.Info("Received End Of Records message", "clientID", clientID)
 
-	fruit := []fruititem.FruitItem{{Fruit: "EOF", Amount: uint32(aggregation.config.Id)}}
-	err := aggregation.sendToExchangeAggs(fruit, clientID)
+	messageEOFControl := inner.ControlMessage{Type: inner.TypeEOF, ClientID: clientID, OriginID: aggregation.config.Id}
+	err := aggregation.sendToExchangeAggs(messageEOFControl)
 	if err != nil {
 		return err
 	}
@@ -236,14 +226,14 @@ func (aggregation *Aggregation) buildFruitTop(fruitsMap map[string]fruititem.Fru
 	return fruitItems[:finalTopSize]
 }
 
-func (aggregation *Aggregation) sendToExchangeAggs(fruits []fruititem.FruitItem, clientID int64) error {
-	message, err := inner.SerializeMessage(fruits, clientID)
+func (aggregation *Aggregation) sendToExchangeAggs(messageControl inner.ControlMessage) error {
+	message, err := inner.SerializeControlMessage(messageControl)
 	if err != nil {
-		slog.Debug("While serializing message to exchange aggs", "err", err, "clientID", clientID, "fruits", fruits)
+		slog.Debug("While serializing message to exchange aggs", "err", err, "messageControl", messageControl)
 		return err
 	}
 	if err := aggregation.exchangeAggs.Send(*message); err != nil {
-		slog.Debug("While sending message to exchange aggs", "err", err, "clientID", clientID, "fruits", fruits)
+		slog.Debug("While sending message to exchange aggs", "err", err, "messageControl", messageControl)
 		return err
 	}
 	return nil

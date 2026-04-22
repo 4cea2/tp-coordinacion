@@ -227,7 +227,7 @@ func (sum *Sum) processFF(clientID int64) error {
 			return err
 		}
 	}
-	slog.Info("Sent EOF to aggs", clientID)
+	slog.Info("Sent EOF to aggs", "clientID", clientID)
 	return nil
 }
 

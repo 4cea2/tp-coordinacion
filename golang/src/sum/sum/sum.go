@@ -30,7 +30,6 @@ type Sum struct {
 	mu              sync.Mutex
 	cond            *sync.Cond
 	processing      bool
-	keys            []string
 	clientFruits    map[int64]map[string]fruititem.FruitItem
 }
 
@@ -50,10 +49,8 @@ func NewSum(config SumConfig) (*Sum, error) {
 
 	fail := false
 	outputExchanges := make(map[string]middleware.Middleware)
-	keys := []string{}
 	for i := range config.AggregationAmount {
 		key := fmt.Sprintf("%s_%d", config.AggregationPrefix, i)
-		keys = append(keys, key)
 		outputExchanges[key], err = middleware.CreateExchangeMiddleware(config.AggregationPrefix, []string{key}, connSettings)
 		if err != nil {
 			fail = true
@@ -75,7 +72,6 @@ func NewSum(config SumConfig) (*Sum, error) {
 		exchangeSums:    exchangeSums,
 		config:          config,
 		processing:      false,
-		keys:            keys,
 		clientFruits:    map[int64]map[string]fruititem.FruitItem{},
 	}
 	sum.cond = sync.NewCond(&sum.mu)
@@ -105,6 +101,9 @@ func (sum *Sum) handleMessageExchange(msg middleware.Message, ack, nack func()) 
 	for sum.processing {
 		sum.cond.Wait()
 	}
+	// Entiendo que en este punto devuelvo una referencia de un elemento compartido,
+	// pero como inmediatamente hago un delete, lo saco del mapa, quedandome solo yo con la referencia y sacandola
+	// del mapa que usan otros hilos
 	fruits, ok := sum.clientFruits[controlMessage.ClientID]
 	delete(sum.clientFruits, controlMessage.ClientID)
 	sum.mu.Unlock()
@@ -205,15 +204,13 @@ func (sum *Sum) sendMessageToExchangeSums(controlMessage inner.ControlMessage) e
 }
 
 func (sum *Sum) processFF(clientID int64) error {
-	eofMessage := []fruititem.FruitItem{}
-	message, err := inner.SerializeMessage(eofMessage, clientID)
-
+	message, err := inner.SerializeMessage([]fruititem.FruitItem{}, clientID)
 	if err != nil {
 		slog.Debug("While serializing EOF message", "err", err, "clientID", clientID)
 		return err
 	}
-	for _, key := range sum.keys {
-		if err := sum.outputExchanges[key].Send(*message); err != nil {
+	for _, outputExchange := range sum.outputExchanges {
+		if err := outputExchange.Send(*message); err != nil {
 			slog.Debug("While sending EOF message", "err", err, "clientID", clientID)
 			return err
 		}
@@ -238,10 +235,7 @@ func (sum *Sum) processEOF(clientID int64, fruits map[string]fruititem.FruitItem
 
 func (sum *Sum) getKeyForExchange(clientID int64, fruitName string) string {
 	hash := fnv.New32a()
-
-	hash.Write([]byte(fmt.Sprintf("%d", clientID)))
-	hash.Write([]byte(fruitName))
-
+	hash.Write([]byte(fmt.Sprintf("%d-%s", clientID, fruitName)))
 	idx := int(hash.Sum32()) % sum.config.AggregationAmount
 
 	return fmt.Sprintf("%s_%d", sum.config.AggregationPrefix, idx)
@@ -253,11 +247,7 @@ func (sum *Sum) sendToOutputExchanges(clientID int64, fruitMessage []fruititem.F
 		slog.Debug("While serializing EOF message", "err", err, "clientID", clientID)
 		return err
 	}
-	fruitName := fmt.Sprintf("%d", clientID) // No envio por fruta cuando me llega el EOF, sino por clientID
-	if len(fruitMessage) == 1 {
-		fruitName = fruitMessage[0].Fruit
-	}
-	keyExchange := sum.getKeyForExchange(clientID, fruitName)
+	keyExchange := sum.getKeyForExchange(clientID, fruitMessage[0].Fruit)
 	if err := sum.outputExchanges[keyExchange].Send(*message); err != nil {
 		slog.Debug("While sending EOF message", "err", err, "clientID", clientID)
 		return err

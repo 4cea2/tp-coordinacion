@@ -87,9 +87,6 @@ func (sum *Sum) handleSignals() {
 	<-signals
 	slog.Info("SIGTERM signal received")
 	slog.Info("Stopping consuming...")
-	for _, exchange := range sum.outputExchanges {
-		exchange.StopConsuming()
-	}
 	sum.inputQueue.StopConsuming()
 	sum.exchangeSums.StopConsuming()
 	slog.Info("Closing middlewares...")
@@ -102,6 +99,7 @@ func (sum *Sum) handleSignals() {
 
 func (sum *Sum) Run() {
 	go sum.handleSignals()
+
 	go sum.exchangeSums.StartConsuming(func(msg middleware.Message, ack, nack func()) {
 		sum.handleMessageExchange(msg, ack, nack)
 	})

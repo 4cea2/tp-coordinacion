@@ -20,7 +20,6 @@ const (
 type ControlMessage struct {
 	Type     uint8 `json:"type"`
 	ClientID int64 `json:"client_id"`
-	OriginID int   `json:"origin_id"`
 }
 
 func serializeJson(messageClient MessageClient) ([]byte, error) {

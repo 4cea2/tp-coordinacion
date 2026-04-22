@@ -3,7 +3,10 @@ package aggregation
 import (
 	"fmt"
 	"log/slog"
+	"os"
+	"os/signal"
 	"sort"
+	"syscall"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
@@ -55,28 +58,43 @@ func NewAggregation(config AggregationConfig) (*Aggregation, error) {
 	return agg, nil
 }
 
+func (aggregation *Aggregation) handleSignals() {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	<-signals
+	slog.Info("SIGTERM signal received")
+	slog.Info("Stopping consuming...")
+	aggregation.inputExchange.StopConsuming()
+	slog.Info("Closing middlewares...")
+	aggregation.inputExchange.Close()
+	aggregation.outputQueue.Close()
+}
+
 func (aggregation *Aggregation) Run() {
+	go aggregation.handleSignals()
+
 	aggregation.inputExchange.StartConsuming(func(msg middleware.Message, ack, nack func()) {
 		aggregation.handleMessage(msg, ack, nack)
 	})
 }
 
 func (aggregation *Aggregation) handleMessage(msg middleware.Message, ack func(), nack func()) {
-	defer ack()
-
 	fruitRecords, clientID, isEof, err := inner.DeserializeMessage(&msg)
 	if err != nil {
 		slog.Error("While deserializing message", "err", err, "clientID", clientID)
+		nack()
 		return
 	}
 
 	if isEof {
 		if err := aggregation.handleEndOfRecordsMessage(clientID); err != nil {
 			slog.Error("While handling end of record message", "err", err, clientID)
+			nack()
 		}
 		return
 	}
 	aggregation.handleDataMessage(fruitRecords, clientID)
+	ack()
 }
 
 func (aggregation *Aggregation) processEOF(clientID int64, fruits []fruititem.FruitItem) error {

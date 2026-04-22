@@ -28,8 +28,6 @@ type Aggregation struct {
 	inputExchange middleware.Middleware
 	clientFruits  map[int64]map[string]fruititem.FruitItem
 	counterEOFs   map[int64]int
-	topSize       int
-	exchangeAggs  middleware.Middleware
 	config        AggregationConfig
 	mu            sync.Mutex
 	cond          *sync.Cond
@@ -51,7 +49,6 @@ func NewAggregation(config AggregationConfig) (*Aggregation, error) {
 		return nil, err
 	}
 
-	exchangeAggs, err := middleware.CreateExchangeMiddleware(config.AggregationPrefix, []string{"broadcast"}, connSettings)
 	if err != nil {
 		outputQueue.Close()
 		inputExchange.Close()
@@ -62,7 +59,6 @@ func NewAggregation(config AggregationConfig) (*Aggregation, error) {
 		inputExchange: inputExchange,
 		clientFruits:  map[int64]map[string]fruititem.FruitItem{},
 		counterEOFs:   map[int64]int{},
-		exchangeAggs:  exchangeAggs,
 		config:        config,
 		processing:    false,
 	}
@@ -195,17 +191,4 @@ func (aggregation *Aggregation) buildFruitTop(fruitsMap map[string]fruititem.Fru
 	})
 	finalTopSize := min(aggregation.config.TopSize, len(fruitItems))
 	return fruitItems[:finalTopSize]
-}
-
-func (aggregation *Aggregation) sendToExchangeAggs(messageControl inner.ControlMessage) error {
-	message, err := inner.SerializeControlMessage(messageControl)
-	if err != nil {
-		slog.Debug("While serializing message to exchange aggs", "err", err, "messageControl", messageControl)
-		return err
-	}
-	if err := aggregation.exchangeAggs.Send(*message); err != nil {
-		slog.Debug("While sending message to exchange aggs", "err", err, "messageControl", messageControl)
-		return err
-	}
-	return nil
 }

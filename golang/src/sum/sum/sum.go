@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
@@ -78,7 +81,27 @@ func NewSum(config SumConfig) (*Sum, error) {
 	return sum, nil
 }
 
+func (sum *Sum) handleSignals() {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	<-signals
+	slog.Info("SIGTERM signal received")
+	slog.Info("Stopping consuming...")
+	for _, exchange := range sum.outputExchanges {
+		exchange.StopConsuming()
+	}
+	sum.inputQueue.StopConsuming()
+	sum.exchangeSums.StopConsuming()
+	slog.Info("Closing middlewares...")
+	for _, exchange := range sum.outputExchanges {
+		exchange.Close()
+	}
+	sum.inputQueue.Close()
+	sum.exchangeSums.Close()
+}
+
 func (sum *Sum) Run() {
+	go sum.handleSignals()
 	go sum.exchangeSums.StartConsuming(func(msg middleware.Message, ack, nack func()) {
 		sum.handleMessageExchange(msg, ack, nack)
 	})
@@ -89,11 +112,11 @@ func (sum *Sum) Run() {
 }
 
 func (sum *Sum) handleMessageExchange(msg middleware.Message, ack, nack func()) {
-	defer ack()
 	controlMessage, err := inner.DeserializeControlMessage(&msg)
 	if err != nil {
 		// Nack?
 		slog.Error("While deserializing message from exchange sums")
+		nack()
 		return
 	}
 	slog.Info("Receive EOF message from exchange sums", "controlMessage", controlMessage)
@@ -111,17 +134,18 @@ func (sum *Sum) handleMessageExchange(msg middleware.Message, ack, nack func()) 
 	err = sum.processEOF(controlMessage.ClientID, fruits, ok)
 	if err != nil {
 		// nack?
+		nack()
 		return
 	}
 	err = sum.processFF(controlMessage.ClientID)
 	if err != nil {
-		// NACK?
+		nack()
 		return
 	}
+	ack()
 }
 
 func (sum *Sum) handleMessage(msg middleware.Message, ack func(), nack func()) {
-	defer ack()
 	defer func() {
 		sum.mu.Lock()
 		sum.processing = false
@@ -135,18 +159,23 @@ func (sum *Sum) handleMessage(msg middleware.Message, ack func(), nack func()) {
 	fruitRecords, clientID, isEof, err := inner.DeserializeMessage(&msg)
 	if err != nil {
 		slog.Error("While deserializing message", "err", err, "clientID", clientID)
+		nack()
 		return
 	}
 
 	if isEof {
 		if err := sum.handleEndOfRecordMessage(clientID); err != nil {
 			slog.Error("While handling end of record message", "err", err, "clientID", clientID)
+			nack()
 		}
 		return
 	}
 	if err := sum.handleDataMessage(fruitRecords, clientID); err != nil {
 		slog.Error("While handling data message", "err", err, "clientID", clientID)
+		nack()
+		return
 	}
+	ack()
 }
 
 func (sum *Sum) handleEndOfRecordMessage(clientID int64) error {

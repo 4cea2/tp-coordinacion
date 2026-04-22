@@ -30,7 +30,7 @@ type Sum struct {
 	mu              sync.Mutex
 	cond            *sync.Cond
 	processing      bool
-	counterEOFs     map[int64]int
+	keys            []string
 	clientFruits    map[int64]map[string]fruititem.FruitItem
 }
 
@@ -50,8 +50,10 @@ func NewSum(config SumConfig) (*Sum, error) {
 
 	fail := false
 	outputExchanges := make(map[string]middleware.Middleware)
+	keys := []string{}
 	for i := range config.AggregationAmount {
 		key := fmt.Sprintf("%s_%d", config.AggregationPrefix, i)
+		keys = append(keys, key)
 		outputExchanges[key], err = middleware.CreateExchangeMiddleware(config.AggregationPrefix, []string{key}, connSettings)
 		if err != nil {
 			fail = true
@@ -73,7 +75,7 @@ func NewSum(config SumConfig) (*Sum, error) {
 		exchangeSums:    exchangeSums,
 		config:          config,
 		processing:      false,
-		counterEOFs:     map[int64]int{},
+		keys:            keys,
 		clientFruits:    map[int64]map[string]fruititem.FruitItem{},
 	}
 	sum.cond = sync.NewCond(&sum.mu)
@@ -114,7 +116,7 @@ func (sum *Sum) handleMessageExchange(msg middleware.Message, ack, nack func()) 
 			return
 		}
 	} else if controlMessage.Type == inner.TypeAckEOF {
-		if controlMessage.ReplyToID != sum.config.Id {
+		if controlMessage.OriginID != sum.config.Id {
 			// Si no fui el que envio el EOF, no me interesa
 			return
 		}
@@ -169,6 +171,7 @@ func (sum *Sum) handleEndOfRecordMessage(clientID int64) error {
 
 func (sum *Sum) handleDataMessage(fruitRecords []fruititem.FruitItem, clientID int64) error {
 	if _, ok := sum.clientFruits[clientID]; !ok {
+		slog.Info("Client new", "clientID", clientID)
 		sum.clientFruits[clientID] = map[string]fruititem.FruitItem{}
 	}
 
@@ -211,17 +214,20 @@ func (sum *Sum) sendMessageToExchangeSums(controlMessage inner.ControlMessage) e
 }
 
 func (sum *Sum) processFF(clientID int64) error {
-	sum.counterEOFs[clientID]++
-	count := sum.counterEOFs[clientID]
+	eofMessage := []fruititem.FruitItem{}
+	message, err := inner.SerializeMessage(eofMessage, clientID)
 
-	if count == sum.config.SumAmount {
-		eofMessage := []fruititem.FruitItem{}
-		err := sum.sendToOutputExchanges(clientID, eofMessage)
-		if err != nil {
+	if err != nil {
+		slog.Debug("While serializing EOF message", "err", err, "clientID", clientID)
+		return err
+	}
+	for _, key := range sum.keys {
+		if err := sum.outputExchanges[key].Send(*message); err != nil {
+			slog.Debug("While sending EOF message", "err", err, "clientID", clientID)
 			return err
 		}
-		delete(sum.counterEOFs, clientID)
 	}
+	slog.Info("Sent EOF to aggs", clientID)
 	return nil
 }
 
@@ -234,7 +240,7 @@ func (sum *Sum) processEOF(controlMessage inner.ControlMessage, fruits map[strin
 			return err
 		}
 	} else {
-		slog.Info("Don't send fruits")
+		slog.Info("Dont send fruits")
 	}
 
 	controlAckEOFMessage := inner.ControlMessage{

@@ -14,15 +14,13 @@ type MessageClient struct {
 }
 
 const (
-	TypeEOF    = iota // 0
-	TypeAckEOF        // 1 // 2
+	TypeEOF = iota // 0
 )
 
 type ControlMessage struct {
-	Type      uint8 `json:"type"`
-	ClientID  int64 `json:"client_id"`
-	OriginID  int   `json:"origin_id"`
-	ReplyToID int   `json:"reply_to_id"`
+	Type     uint8 `json:"type"`
+	ClientID int64 `json:"client_id"`
+	OriginID int   `json:"origin_id"`
 }
 
 func serializeJson(messageClient MessageClient) ([]byte, error) {

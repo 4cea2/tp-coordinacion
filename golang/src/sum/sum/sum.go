@@ -199,7 +199,8 @@ func (sum *Sum) sendFruitsToOutput(clientID int64, fruitsItemMap map[string]frui
 		if len(fruitRecord) == 0 {
 			continue
 		}
-		err := sum.sendToOutputExchanges(clientID, fruitRecord)
+		keyExchange := sum.getKeyForExchange(clientID, fruitRecord[0].Fruit)
+		err := sum.sendToOutputExchange(keyExchange, fruitRecord, clientID)
 		if err != nil {
 			return err
 		}
@@ -221,13 +222,8 @@ func (sum *Sum) sendMessageToExchangeSums(controlMessage inner.ControlMessage) e
 }
 
 func (sum *Sum) processFF(clientID int64) error {
-	message, err := inner.SerializeMessage([]fruititem.FruitItem{}, clientID)
-	if err != nil {
-		slog.Debug("While serializing EOF message", "err", err, "clientID", clientID)
-		return err
-	}
-	for _, outputExchange := range sum.outputExchanges {
-		if err := outputExchange.Send(*message); err != nil {
+	for key, _ := range sum.outputExchanges {
+		if err := sum.sendToOutputExchange(key, []fruititem.FruitItem{}, clientID); err != nil {
 			slog.Debug("While sending EOF message", "err", err, "clientID", clientID)
 			return err
 		}
@@ -254,18 +250,16 @@ func (sum *Sum) getKeyForExchange(clientID int64, fruitName string) string {
 	hash := fnv.New32a()
 	hash.Write([]byte(fmt.Sprintf("%d-%s", clientID, fruitName)))
 	idx := int(hash.Sum32()) % sum.config.AggregationAmount
-
 	return fmt.Sprintf("%s_%d", sum.config.AggregationPrefix, idx)
 }
 
-func (sum *Sum) sendToOutputExchanges(clientID int64, fruitMessage []fruititem.FruitItem) error {
-	message, err := inner.SerializeMessage(fruitMessage, clientID)
+func (sum *Sum) sendToOutputExchange(key string, messageFruit []fruititem.FruitItem, clientID int64) error {
+	message, err := inner.SerializeMessage(messageFruit, clientID)
 	if err != nil {
 		slog.Debug("While serializing EOF message", "err", err, "clientID", clientID)
 		return err
 	}
-	keyExchange := sum.getKeyForExchange(clientID, fruitMessage[0].Fruit)
-	if err := sum.outputExchanges[keyExchange].Send(*message); err != nil {
+	if err := sum.outputExchanges[key].Send(*message); err != nil {
 		slog.Debug("While sending EOF message", "err", err, "clientID", clientID)
 		return err
 	}

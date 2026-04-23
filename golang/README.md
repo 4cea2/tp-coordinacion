@@ -44,6 +44,10 @@ Entonces, para cada instancia de los Aggregations:
 1. Mantiene un contador de EOFs recibidos por cliente
 2. Cuando el contador de EOFs por cliente llega a la cantidad de sums, se considera que el cliente no enviara mas data
 3. Se calcula el top local y se envia a Join, junto con un EOF
+---
+## Join
+Cuenta con un contador de EOFs recibidos por cliente, y siempre armara y enviara el top final cuando todas las instancias de Aggregations hayan enviado su EOF por cliente.
+
 
 ## Escalado respecto a clientes
 Entiendo que, al aumentar/disminuir la cantidad de clientes no afecta en como se distribuye la carga entre las instancias 

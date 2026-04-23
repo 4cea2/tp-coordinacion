@@ -24,11 +24,11 @@ Puede pasar que:
 
 En ese caso se pierde informacion del cliente, porque el EOF se procesaria antes que los datos pendientes del cliente.
 
-Para solucionar esto, se usan locks para garantizar el orden:
+Para solucionar esto, se usa un mutex para garantizar el orden del acceso:
 - Un lock en `handleMessage` (procesamiento inputQueue)
 - Otro lock en el procesamiento de los EOFs del exchange de control
 
-Con esto se asegura que se procesen primero los mensajes pendientes del cliente, y luego el EOF, evitando asi la perdida de informacion del cliente.
+Con esto se asegura que se procesen primero los mensajes pendientes del cliente (si es que esta procesando), y luego el EOF, evitando asi la perdida de informacion del cliente.
 
 Ademas, se hace uso del `prefetch = 1` en el inputQueue:
 - Cada instancia tenga como maximo un mensaje sin confirmar
